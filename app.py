@@ -1,6 +1,7 @@
 import streamlit as st
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torchvision.transforms as T
 from PIL import Image
 import numpy as np
@@ -283,34 +284,48 @@ div[data-testid="stButton"] > button:hover {
 
 
 # ── CNN Model definition (must match training) ─────────────────
-class ConvBlock(nn.Module):
-    def __init__(self, in_ch, out_ch):
+class ResBlock(nn.Module):
+    def __init__(self, in_ch, out_ch, stride=2):
         super().__init__()
-        self.block = nn.Sequential(
-            nn.Conv2d(in_ch,  out_ch, 3, padding=1, bias=False),
-            nn.BatchNorm2d(out_ch), nn.ReLU(inplace=True),
-            nn.Conv2d(out_ch, out_ch, 3, padding=1, bias=False),
-            nn.BatchNorm2d(out_ch), nn.ReLU(inplace=True),
-            nn.MaxPool2d(2, 2)
-        )
-    def forward(self, x): return self.block(x)
+        self.conv1    = nn.Conv2d(in_ch, out_ch, 3, stride=stride, padding=1, bias=False)
+        self.bn1      = nn.BatchNorm2d(out_ch)
+        self.conv2    = nn.Conv2d(out_ch, out_ch, 3, padding=1, bias=False)
+        self.bn2      = nn.BatchNorm2d(out_ch)
+        self.shortcut = nn.Sequential(
+            nn.Conv2d(in_ch, out_ch, 1, stride=stride, bias=False),
+            nn.BatchNorm2d(out_ch)
+        ) if in_ch != out_ch else nn.Identity()
+
+    def forward(self, x):
+        out = F.relu(self.bn1(self.conv1(x)))
+        out = self.bn2(self.conv2(out))
+        return F.relu(out + self.shortcut(x))
 
 class FairVisionCNN(nn.Module):
     def __init__(self, num_classes=9):
         super().__init__()
-        self.features = nn.Sequential(
-            ConvBlock(3, 32), ConvBlock(32, 64),
-            ConvBlock(64, 128), ConvBlock(128, 256),
+        self.stem = nn.Sequential(
+            nn.Conv2d(3, 64, 7, stride=2, padding=3, bias=False),
+            nn.BatchNorm2d(64),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(3, stride=2, padding=1)
         )
-        self.gap = nn.AdaptiveAvgPool2d((1, 1))
+        self.stage1 = nn.Sequential(ResBlock(64, 128),  ResBlock(128, 128, stride=1))
+        self.stage2 = nn.Sequential(ResBlock(128, 256), ResBlock(256, 256, stride=1))
+        self.stage3 = nn.Sequential(ResBlock(256, 512), ResBlock(512, 512, stride=1))
+        self.gap    = nn.AdaptiveAvgPool2d((1, 1))
         self.classifier = nn.Sequential(
             nn.Flatten(),
-            nn.Linear(256, 512), nn.ReLU(inplace=True), nn.Dropout(0.4),
-            nn.Linear(512, 256), nn.ReLU(inplace=True), nn.Dropout(0.3),
+            nn.Linear(512, 256), nn.ReLU(inplace=True), nn.Dropout(0.4),
             nn.Linear(256, num_classes)
         )
+
     def forward(self, x):
-        return self.classifier(self.gap(self.features(x)))
+        x = self.stem(x)
+        x = self.stage1(x)
+        x = self.stage2(x)
+        x = self.stage3(x)
+        return self.classifier(self.gap(x))
 
 
 # ── Load model ─────────────────────────────────────────────────
@@ -318,7 +333,7 @@ class FairVisionCNN(nn.Module):
 def load_model():
     try:
         checkpoint = torch.load(
-            'fairvision_best_model.pth',
+            'fairvision_baseline.pth',
             map_location=torch.device('cpu'),
             weights_only=False
         )
@@ -383,6 +398,38 @@ st.markdown("""
 _boy_b64 = _load_b64("boy.jpg")
 _boy_src = f'data:image/jpeg;base64,{_boy_b64}' if _boy_b64 else ''
 
+_group_b64 = _load_b64("group.png")
+if _group_b64:
+    st.markdown(f"""
+    <style>
+    .hero-section {{
+        background-image: url('data:image/png;base64,{_group_b64}') !important;
+        background-size: cover;
+        background-position: center 30%;
+        min-height: 620px;
+    }}
+    .hero-section::before {{
+        content: '';
+        position: absolute;
+        inset: 0;
+        background: rgba(244, 244, 240, 0.80);
+        z-index: 0;
+    }}
+    /* Only lift in-flow content above the overlay, not the absolute animation */
+    .hero-section > div:not(.face-animation-wrap) {{
+        position: relative;
+        z-index: 1;
+    }}
+    /* Keep animation absolutely positioned and above overlay */
+    .face-animation-wrap {{
+        position: absolute !important;
+        right: 48px;
+        top: 60px;
+        z-index: 1;
+    }}
+    </style>
+    """, unsafe_allow_html=True)
+
 hero_html = (
 '<div class="hero-section">'
 '<div style="max-width:580px;">'
@@ -445,20 +492,102 @@ st.markdown(hero_html, unsafe_allow_html=True)
 # ══════════════════════════════════════════════════════════════
 # FEATURES STRIP
 # ══════════════════════════════════════════════════════════════
-st.markdown("""
+
+# Custom SVG icons — blue line-art style
+_icon_bias_detect = """
+<svg width="54" height="54" viewBox="0 0 54 54" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs><clipPath id="bd-lens"><circle cx="39" cy="39" r="12"/></clipPath></defs>
+  <!-- Three diverse person silhouettes (demographic groups) -->
+  <circle cx="8"  cy="10" r="4.5" stroke="#5B4FE8" stroke-width="2.2"/>
+  <path d="M3.5 22 Q8 16 12.5 22"  stroke="#5B4FE8" stroke-width="2.2" fill="none" stroke-linecap="round"/>
+  <circle cx="22" cy="8"  r="5.5" stroke="#5B4FE8" stroke-width="2.2"/>
+  <path d="M16.5 22 Q22 14 27.5 22" stroke="#5B4FE8" stroke-width="2.2" fill="none" stroke-linecap="round"/>
+  <circle cx="36" cy="10" r="4.5" stroke="#5B4FE8" stroke-width="2.2"/>
+  <path d="M31.5 22 Q36 16 40.5 22" stroke="#5B4FE8" stroke-width="2.2" fill="none" stroke-linecap="round"/>
+  <!-- AI scan beam across the faces -->
+  <line x1="2" y1="15" x2="43" y2="15" stroke="#5B4FE8" stroke-width="1.6" stroke-dasharray="4 3" opacity="0.55"/>
+  <!-- Magnifying glass -->
+  <circle cx="39" cy="39" r="12" stroke="#5B4FE8" stroke-width="2.8"/>
+  <line x1="47.5" y1="47.5" x2="52.5" y2="52.5" stroke="#5B4FE8" stroke-width="2.8" stroke-linecap="round"/>
+  <!-- Disparity bar chart clipped inside the lens -->
+  <g clip-path="url(#bd-lens)">
+    <rect x="29" y="43" width="4.5" height="8"  rx="1" fill="#5B4FE8"/>
+    <rect x="35" y="35" width="4.5" height="16" rx="1" fill="#5B4FE8" opacity="0.65"/>
+    <rect x="41" y="39" width="4.5" height="12" rx="1" fill="#5B4FE8" opacity="0.38"/>
+    <line x1="27" y1="51" x2="51" y2="51" stroke="#5B4FE8" stroke-width="1.6" stroke-linecap="round"/>
+  </g>
+</svg>"""
+
+_icon_bias_mitig = """
+<svg width="54" height="54" viewBox="0 0 54 54" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- Checkmark (fairness achieved) -->
+  <path d="M19 8 L24 14 L35 4" stroke="#5B4FE8" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+  <!-- Scale central pillar -->
+  <line x1="27" y1="14" x2="27" y2="50" stroke="#5B4FE8" stroke-width="2.8" stroke-linecap="round"/>
+  <line x1="16" y1="50" x2="38" y2="50" stroke="#5B4FE8" stroke-width="2.8" stroke-linecap="round"/>
+  <!-- Scale arm (level = balanced) -->
+  <line x1="6"  y1="22" x2="48" y2="22" stroke="#5B4FE8" stroke-width="2.8" stroke-linecap="round"/>
+  <circle cx="27" cy="22" r="3.5" fill="#5B4FE8"/>
+  <!-- Left pan -->
+  <line x1="8" y1="22" x2="8" y2="35" stroke="#5B4FE8" stroke-width="2.2" stroke-linecap="round"/>
+  <path d="M3 35 Q8 43 13 35" stroke="#5B4FE8" stroke-width="2.2" fill="none" stroke-linecap="round"/>
+  <!-- Two equal person dots on left pan -->
+  <circle cx="6.5"  cy="30.5" r="2.8" stroke="#5B4FE8" stroke-width="2" fill="#EEEAF8"/>
+  <circle cx="12.5" cy="30.5" r="2.8" stroke="#5B4FE8" stroke-width="2" fill="#EEEAF8"/>
+  <!-- Right pan -->
+  <line x1="46" y1="22" x2="46" y2="35" stroke="#5B4FE8" stroke-width="2.2" stroke-linecap="round"/>
+  <path d="M41 35 Q46 43 51 35" stroke="#5B4FE8" stroke-width="2.2" fill="none" stroke-linecap="round"/>
+  <!-- Two equal person dots on right pan -->
+  <circle cx="44.5" cy="30.5" r="2.8" stroke="#5B4FE8" stroke-width="2" fill="#EEEAF8"/>
+  <circle cx="50.5" cy="30.5" r="2.8" stroke="#5B4FE8" stroke-width="2" fill="#EEEAF8"/>
+</svg>"""
+
+_icon_cnn = """
+<svg width="54" height="54" viewBox="0 0 54 54" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- Input: face pixel grid (image being classified) -->
+  <rect x="1" y="15" width="15" height="15" rx="2.5" stroke="#5B4FE8" stroke-width="2.2"/>
+  <rect x="4.5" y="18" width="3.5" height="3.5" fill="#5B4FE8" rx="0.6"/>
+  <rect x="11"  y="18" width="3.5" height="3.5" fill="#5B4FE8" rx="0.6"/>
+  <rect x="6.5" y="23.5" width="6" height="2.5" fill="#5B4FE8" rx="0.6"/>
+  <!-- Arrow input → layers -->
+  <line x1="17" y1="22.5" x2="21" y2="22.5" stroke="#5B4FE8" stroke-width="2" stroke-linecap="round"/>
+  <path d="M19 20.5 L21.5 22.5 L19 24.5" stroke="#5B4FE8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+  <!-- 3 stacked convolutional feature maps -->
+  <rect x="23" y="9"  width="14" height="10" rx="2" stroke="#5B4FE8" stroke-width="2.2" fill="#EEEAF8"/>
+  <rect x="23" y="22" width="14" height="10" rx="2" stroke="#5B4FE8" stroke-width="2.2" fill="#EEEAF8"/>
+  <rect x="23" y="35" width="14" height="10" rx="2" stroke="#5B4FE8" stroke-width="2.2" fill="#EEEAF8"/>
+  <!-- Activation dots in feature maps -->
+  <circle cx="28.5" cy="14" r="1.8" fill="#5B4FE8"/>
+  <circle cx="33.5" cy="14" r="1.8" fill="#5B4FE8" opacity="0.42"/>
+  <circle cx="28.5" cy="27" r="1.8" fill="#5B4FE8" opacity="0.65"/>
+  <circle cx="33.5" cy="27" r="1.8" fill="#5B4FE8" opacity="0.32"/>
+  <circle cx="28.5" cy="40" r="1.8" fill="#5B4FE8" opacity="0.45"/>
+  <!-- Connection lines → output nodes -->
+  <line x1="37" y1="14" x2="42" y2="21" stroke="#5B4FE8" stroke-width="1.2" opacity="0.5"/>
+  <line x1="37" y1="27" x2="42" y2="27" stroke="#5B4FE8" stroke-width="1.2" opacity="0.5"/>
+  <line x1="37" y1="40" x2="42" y2="33" stroke="#5B4FE8" stroke-width="1.2" opacity="0.5"/>
+  <!-- Output: 3 classification nodes -->
+  <circle cx="47" cy="21" r="5.5" fill="#5B4FE8"/>
+  <circle cx="47" cy="33" r="4.5" stroke="#5B4FE8" stroke-width="2.2" fill="#EEEAF8"/>
+  <circle cx="47" cy="44" r="4.5" stroke="#5B4FE8" stroke-width="2.2" fill="#EEEAF8"/>
+  <!-- Checkmark in top (predicted) output node -->
+  <path d="M43.5 21 L46.5 24.5 L51.5 17" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+</svg>"""
+
+st.markdown(f"""
 <div class="features-strip">
   <div class="feature-card">
-    <div class="feature-icon">🔍</div>
+    <div class="feature-icon">{_icon_bias_detect}</div>
     <div class="feature-title">Bias Detection</div>
     <div class="feature-desc">Audits model performance across 7 race groups and 2 gender groups to surface hidden disparities.</div>
   </div>
   <div class="feature-card">
-    <div class="feature-icon">⚖️</div>
+    <div class="feature-icon">{_icon_bias_mitig}</div>
     <div class="feature-title">Bias Mitigation</div>
     <div class="feature-desc">Two mitigation strategies applied — class-weighted loss and oversampling via WeightedRandomSampler.</div>
   </div>
   <div class="feature-card">
-    <div class="feature-icon">🧠</div>
+    <div class="feature-icon">{_icon_cnn}</div>
     <div class="feature-title">CNN From Scratch</div>
     <div class="feature-desc">4-block convolutional neural network trained entirely from scratch on FairFace — no pretrained models used.</div>
   </div>
@@ -504,7 +633,7 @@ with st.container():
                     st.session_state.use_camera = False
                     st.rerun()
             if model is None and image_source is None:
-                st.warning("⚠️ `fairvision_best_model.pth` not found. Place it in the same folder as `app.py` and restart.")
+                st.warning("⚠️ `fairvision_baseline.pth` not found. Place it in the same folder as `app.py` and restart.")
 
         image = Image.open(image_source).convert("RGB") if image_source is not None else None
 
@@ -529,7 +658,7 @@ with st.container():
 
         if image is not None:
             if model is None:
-                st.error("⚠️ Model file not found. Please ensure `fairvision_best_model.pth` is in the same folder as `app.py`.")
+                st.error("⚠️ Model file not found. Please ensure `fairvision_baseline.pth` is in the same folder as `app.py`.")
             else:
                 with st.spinner("Analysing..."):
                     top3, all_probs = predict(image, model, checkpoint)
