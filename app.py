@@ -7,6 +7,7 @@ from PIL import Image
 import numpy as np
 import base64
 import io
+from streamlit_cropper import st_cropper
 
 # ── Page config ────────────────────────────────────────────────
 st.set_page_config(
@@ -366,6 +367,23 @@ def predict(image: Image.Image, model, checkpoint):
     return top3, all_probs
 
 
+def crop_to_face_guide(image: Image.Image) -> Image.Image:
+    """Crop the captured camera frame to the oval guide region.
+
+    The guide oval sits at cx=50%, cy=46%, rx=26.25%, ry=40.7% of the frame.
+    We take a square bounding that region so the model sees a tight face crop.
+    """
+    W, H = image.size
+    cx = int(0.50 * W)
+    cy = int(0.46 * H)
+    half = int(min(0.265 * W, 0.415 * H))  # tightest axis of the oval
+    left   = max(0, cx - half)
+    top    = max(0, cy - half)
+    right  = min(W, cx + half)
+    bottom = min(H, cy + half)
+    return image.crop((left, top, right, bottom))
+
+
 model, checkpoint = load_model()
 
 # ── Pre-load hero image as base64 ──────────────────────────────
@@ -609,9 +627,54 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
-# Streamlit upload widget
-if 'use_camera' not in st.session_state:
-    st.session_state.use_camera = False
+# ── Session state ──────────────────────────────────────────────
+if 'use_camera'      not in st.session_state: st.session_state.use_camera      = False
+if 'confirmed_crop'  not in st.session_state: st.session_state.confirmed_crop  = None
+if 'confirmed_for'   not in st.session_state: st.session_state.confirmed_for   = None
+
+# ── Crop dialog (modal popup) ───────────────────────────────────
+@st.dialog("Crop Face Area", width="small")
+def _crop_dialog(raw_image, file_id, W, H):
+    st.markdown(
+        '<p style="font-size:12px;color:#888;margin:0 0 12px;text-align:center">'
+        'Drag the box to frame the face · drag corners to resize</p>',
+        unsafe_allow_html=True
+    )
+
+    # Fit image to the small dialog (~460 px usable width)
+    _max_px = 460
+    _scale  = min(1.0, _max_px / max(W, H))
+    display_img = (
+        raw_image.resize((int(W * _scale), int(H * _scale)), Image.LANCZOS)
+        if _scale < 1.0 else raw_image
+    )
+
+    crop_box = st_cropper(
+        display_img,
+        realtime_update=True,
+        box_color='#5B4FE8',
+        aspect_ratio=(1, 1),
+        return_type='box',
+        key=f"dlg_{file_id}",
+    )
+
+    st.markdown("<div style='height:14px'></div>", unsafe_allow_html=True)
+
+    # Centered small submit button
+    _, btn_col, _ = st.columns([2, 3, 2])
+    with btn_col:
+        if st.button("Submit", type="primary", use_container_width=True):
+            inv    = 1.0 / _scale
+            left   = max(0, int(crop_box['left'] * inv))
+            top    = max(0, int(crop_box['top']  * inv))
+            right  = min(W, int((crop_box['left'] + crop_box['width'])  * inv))
+            bottom = min(H, int((crop_box['top']  + crop_box['height']) * inv))
+            cropped = raw_image.crop((left, top, right, bottom))
+            _buf = io.BytesIO()
+            cropped.save(_buf, format='PNG')
+            st.session_state.confirmed_crop = _buf.getvalue()
+            st.session_state.confirmed_for  = file_id
+            st.rerun()
 
 with st.container():
     pad_l, main_col, pad_r = st.columns([1, 6, 1])
@@ -628,6 +691,37 @@ with st.container():
                     st.session_state.use_camera = True
                     st.rerun()
             else:
+                st.components.v1.html("""<script>
+(function(){
+    var d=window.parent.document, ID='fv-face-guide';
+    function inject(){
+        var cam=d.querySelector('[data-testid="stCameraInput"]');
+        if(!cam||cam.querySelector('#'+ID))return;
+        cam.style.position='relative';
+        var el=d.createElement('div');
+        el.id=ID;
+        el.style.cssText='position:absolute;top:0;left:0;right:0;bottom:56px;pointer-events:none;z-index:20;';
+        el.innerHTML='<svg viewBox="0 0 400 300" width="100%" height="100%" fill="none" xmlns="http://www.w3.org/2000/svg">'
+            /* face oval */
+            +'<ellipse cx="200" cy="138" rx="105" ry="122" stroke="white" stroke-width="2.5" opacity="0.88"/>'
+            /* top-left bracket */
+            +'<path d="M50 45 L50 95 M50 45 L100 45" stroke="white" stroke-width="4.5" stroke-linecap="round"/>'
+            /* top-right bracket */
+            +'<path d="M350 45 L350 95 M350 45 L300 45" stroke="white" stroke-width="4.5" stroke-linecap="round"/>'
+            /* bottom-left bracket */
+            +'<path d="M50 245 L50 195 M50 245 L100 245" stroke="white" stroke-width="4.5" stroke-linecap="round"/>'
+            /* bottom-right bracket */
+            +'<path d="M350 245 L350 195 M350 245 L300 245" stroke="white" stroke-width="4.5" stroke-linecap="round"/>'
+            /* label */
+            +'<rect x="110" y="267" width="180" height="24" rx="12" fill="black" fill-opacity="0.45"/>'
+            +'<text x="200" y="283" text-anchor="middle" fill="white" font-size="12" font-family="DM Sans,sans-serif" font-weight="500" opacity="0.95">Align face within oval</text>'
+            +'</svg>';
+        cam.appendChild(el);
+    }
+    new MutationObserver(inject).observe(d.body,{childList:true,subtree:true});
+    [100,400,900].forEach(function(t){setTimeout(inject,t);});
+})();
+</script>""", height=0, scrolling=False)
                 image_source = st.camera_input("Take a photo")
                 if st.button("📁  Upload File Instead", use_container_width=True):
                     st.session_state.use_camera = False
@@ -635,26 +729,68 @@ with st.container():
             if model is None and image_source is None:
                 st.warning("⚠️ `fairvision_baseline.pth` not found. Place it in the same folder as `app.py` and restart.")
 
-        image = Image.open(image_source).convert("RGB") if image_source is not None else None
+        image = None
 
-        with preview_col:
-            if image is not None:
-                buf = io.BytesIO()
-                image.save(buf, format='PNG')
-                b64 = base64.b64encode(buf.getvalue()).decode()
-                st.markdown(
-                    f'<div style="background:white;border:2px dashed #C4BFEF;border-radius:16px;padding:32px;display:flex;align-items:center;justify-content:center;height:100%;box-sizing:border-box;">'
-                    f'<img src="data:image/png;base64,{b64}" style="max-width:100%;max-height:180px;border-radius:10px;object-fit:contain;display:block;">'
-                    f'</div>',
-                    unsafe_allow_html=True
-                )
+        # ── Helpers ───────────────────────────────────────────────
+        def _placeholder(msg):
+            st.markdown(
+                f'<div style="background:white;border:2px dashed #C4BFEF;border-radius:16px;'
+                f'padding:32px;display:flex;align-items:center;justify-content:center;'
+                f'min-height:200px;box-sizing:border-box;">'
+                f'<span style="font-size:13px;color:#aaa;font-weight:500">{msg}</span></div>',
+                unsafe_allow_html=True
+            )
+
+        def _show_preview(pil_img):
+            buf = io.BytesIO()
+            pil_img.save(buf, format='PNG')
+            b64 = base64.b64encode(buf.getvalue()).decode()
+            st.markdown(
+                f'<div style="background:white;border:2px solid #C4BFEF;border-radius:16px;'
+                f'padding:16px;display:flex;flex-direction:column;align-items:center;gap:8px;">'
+                f'<p style="font-size:11px;font-weight:700;letter-spacing:0.09em;'
+                f'text-transform:uppercase;color:#5B4FE8;margin:0">Cropped Preview</p>'
+                f'<img src="data:image/png;base64,{b64}" style="max-width:100%;max-height:260px;'
+                f'border-radius:10px;object-fit:contain;display:block;"></div>',
+                unsafe_allow_html=True
+            )
+
+        # ── Main logic ────────────────────────────────────────────
+        if image_source is not None:
+            raw_image = Image.open(image_source).convert("RGB")
+            W, H      = raw_image.size
+
+            if st.session_state.use_camera:
+                image = crop_to_face_guide(raw_image)
+                with preview_col:
+                    _show_preview(image)
+
             else:
-                st.markdown(
-                    '<div style="background:white;border:2px dashed #C4BFEF;border-radius:16px;padding:32px;display:flex;align-items:center;justify-content:center;height:100%;box-sizing:border-box;min-height:160px;">'
-                    '<span style="font-size:13px;color:#aaa;font-weight:500">Image preview</span>'
-                    '</div>',
-                    unsafe_allow_html=True
-                )
+                _file_id = f"{image_source.name}_{image_source.size}"
+
+                # Reset crop state when a new image is uploaded
+                if st.session_state.confirmed_for != _file_id:
+                    st.session_state.confirmed_crop = None
+                    st.session_state.confirmed_for  = _file_id
+
+                if st.session_state.confirmed_crop:
+                    image = Image.open(io.BytesIO(st.session_state.confirmed_crop))
+                    with preview_col:
+                        _show_preview(image)
+                    with upload_col:
+                        if st.button("✎  Re-crop", use_container_width=True):
+                            st.session_state.confirmed_crop = None
+                            st.rerun()
+                else:
+                    with preview_col:
+                        _placeholder("Crop & submit to see preview")
+                    # Open crop dialog automatically as soon as image is uploaded
+                    _crop_dialog(raw_image, _file_id, W, H)
+
+        else:
+            with preview_col:
+                _placeholder("Upload an image to crop" if not st.session_state.use_camera
+                             else "Take a photo to analyse")
 
         if image is not None:
             if model is None:

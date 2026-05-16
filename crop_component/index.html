@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { background: transparent; overflow: hidden; font-family: sans-serif; }
+
+#wrap { width: 100%; }
+
+#loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 280px;
+  color: #bbb;
+  font-size: 13px;
+  letter-spacing: 0.05em;
+}
+
+#container {
+  position: relative;
+  width: 100%;
+  display: none;
+  line-height: 0;
+  border-radius: 10px;
+  overflow: hidden;
+  background: #111;
+}
+
+#img {
+  display: block;
+  width: 100%;
+  height: auto;
+  user-select: none;
+  -webkit-user-drag: none;
+  border-radius: 10px;
+  opacity: 0.92;
+}
+
+.ov {
+  position: absolute;
+  background: rgba(0,0,0,0.54);
+  pointer-events: none;
+  z-index: 2;
+}
+
+#cropbox {
+  position: absolute;
+  border: 1.5px solid rgba(255,255,255,0.82);
+  cursor: move;
+  z-index: 3;
+  user-select: none;
+  touch-action: none;
+}
+
+/* Corner brackets */
+.br {
+  position: absolute;
+  width: 22px;
+  height: 22px;
+  pointer-events: none;
+}
+.br::before, .br::after {
+  content: '';
+  position: absolute;
+  background: #fff;
+  border-radius: 1px;
+}
+.br::before { width: 3px; height: 22px; }
+.br::after  { width: 22px; height: 3px; }
+.br-tl { top:-2px; left:-2px; }
+.br-tl::before { top:0; left:0; }
+.br-tl::after  { top:0; left:0; }
+.br-tr { top:-2px; right:-2px; }
+.br-tr::before { top:0; right:0; }
+.br-tr::after  { top:0; right:0; }
+.br-bl { bottom:-2px; left:-2px; }
+.br-bl::before { bottom:0; left:0; }
+.br-bl::after  { bottom:0; left:0; }
+.br-br { bottom:-2px; right:-2px; }
+.br-br::before { bottom:0; right:0; }
+.br-br::after  { bottom:0; right:0; }
+
+/* Resize handles (invisible, larger hit target) */
+.hnd {
+  position: absolute;
+  width: 44px;
+  height: 44px;
+  z-index: 5;
+  touch-action: none;
+}
+.h-tl { top:-8px;    left:-8px;   cursor:nwse-resize; }
+.h-tr { top:-8px;    right:-8px;  cursor:nesw-resize; }
+.h-bl { bottom:-8px; left:-8px;   cursor:nesw-resize; }
+.h-br { bottom:-8px; right:-8px;  cursor:nwse-resize; }
+
+#hint {
+  display: none;
+  text-align: center;
+  font-size: 11px;
+  color: #999;
+  padding: 7px 0 2px;
+  letter-spacing: 0.04em;
+}
+</style>
+</head>
+<body>
+<div id="wrap">
+  <div id="loading">Loading preview…</div>
+  <div id="container">
+    <img id="img" alt="" draggable="false" />
+    <div class="ov" id="ov-t"></div>
+    <div class="ov" id="ov-b"></div>
+    <div class="ov" id="ov-l"></div>
+    <div class="ov" id="ov-r"></div>
+    <div id="cropbox">
+      <div class="br br-tl"></div>
+      <div class="br br-tr"></div>
+      <div class="br br-bl"></div>
+      <div class="br br-br"></div>
+      <div class="hnd h-tl" data-c="tl"></div>
+      <div class="hnd h-tr" data-c="tr"></div>
+      <div class="hnd h-bl" data-c="bl"></div>
+      <div class="hnd h-br" data-c="br"></div>
+    </div>
+  </div>
+  <div id="hint">Drag to move &nbsp;·&nbsp; Drag corners to resize</div>
+</div>
+
+<script>
+(function(){
+  var img     = document.getElementById('img');
+  var box     = document.getElementById('cropbox');
+  var con     = document.getElementById('container');
+  var loading = document.getElementById('loading');
+  var hint    = document.getElementById('hint');
+  var ovT = document.getElementById('ov-t');
+  var ovB = document.getElementById('ov-b');
+  var ovL = document.getElementById('ov-l');
+  var ovR = document.getElementById('ov-r');
+
+  var cx = 0.50, cy = 0.46, half = 0.28;
+  var imgW = 0, imgH = 0;
+  var drag = null;
+  var currentUrl = '';
+
+  // ── Streamlit messaging ───────────────────────────────────────
+  function postH(h) {
+    window.parent.postMessage({ type:'streamlit:setFrameHeight', height:h }, '*');
+  }
+  function postVal() {
+    window.parent.postMessage({
+      type:'streamlit:setComponentValue',
+      value:{ cx:cx, cy:cy, half:half },
+      dataType:'json'
+    }, '*');
+  }
+
+  // Make iframe visible immediately
+  postH(300);
+
+  // ── Render crop box + overlays ────────────────────────────────
+  function render() {
+    if (!imgW || !imgH) return;
+    var px = cx * imgW;
+    var py = cy * imgH;
+    var h  = half * Math.min(imgW, imgH);
+    var l = Math.max(0, px - h);
+    var t = Math.max(0, py - h);
+    var r = Math.min(imgW, px + h);
+    var b = Math.min(imgH, py + h);
+    var bw = r - l, bh = b - t;
+
+    box.style.left   = l+'px'; box.style.top    = t+'px';
+    box.style.width  = bw+'px'; box.style.height = bh+'px';
+
+    ovT.style.cssText = 'left:0;top:0;width:'+imgW+'px;height:'+t+'px;';
+    ovB.style.cssText = 'left:0;top:'+b+'px;width:'+imgW+'px;height:'+(imgH-b)+'px;';
+    ovL.style.cssText = 'left:0;top:'+t+'px;width:'+l+'px;height:'+bh+'px;';
+    ovR.style.cssText = 'left:'+r+'px;top:'+t+'px;width:'+(imgW-r)+'px;height:'+bh+'px;';
+  }
+
+  // ── Image load ────────────────────────────────────────────────
+  function onImgLoad() {
+    if (!img.naturalWidth) return;
+    imgW = con.clientWidth || con.offsetWidth || 300;
+    imgH = Math.round(imgW * img.naturalHeight / img.naturalWidth);
+    con.style.height   = imgH + 'px';
+    con.style.display  = 'block';
+    loading.style.display = 'none';
+    hint.style.display    = 'block';
+    render();
+    postH(imgH + 36);
+  }
+
+  img.addEventListener('load', onImgLoad);
+  img.addEventListener('error', function() {
+    loading.textContent = 'Image failed to load.';
+  });
+
+  window.addEventListener('resize', function() {
+    if (!img.naturalWidth) return;
+    imgW = con.clientWidth || con.offsetWidth || imgW;
+    imgH = Math.round(imgW * img.naturalHeight / img.naturalWidth);
+    con.style.height = imgH + 'px';
+    render();
+    postH(imgH + 36);
+  });
+
+  // ── Drag ──────────────────────────────────────────────────────
+  function clientXY(e) {
+    if (e.touches && e.touches.length) return { x:e.touches[0].clientX, y:e.touches[0].clientY };
+    return { x:e.clientX, y:e.clientY };
+  }
+
+  function startDrag(e) {
+    var corner = e.target.dataset.c;
+    var rect = con.getBoundingClientRect();
+    var p = clientXY(e);
+    var mx = p.x - rect.left, my = p.y - rect.top;
+    drag = { mode: corner ? 'resize' : 'move', corner:corner,
+             sx:mx, sy:my, scx:cx, scy:cy, sh:half };
+    e.preventDefault();
+    e.stopPropagation();
+  }
+
+  function moveDrag(e) {
+    if (!drag) return;
+    var rect = con.getBoundingClientRect();
+    var p = clientXY(e);
+    var mx = p.x - rect.left, my = p.y - rect.top;
+    var minH = 24 / Math.min(imgW, imgH);
+
+    if (drag.mode === 'move') {
+      var dx = (mx - drag.sx) / imgW;
+      var dy = (my - drag.sy) / imgH;
+      var hpx = half * Math.min(imgW, imgH);
+      cx = Math.max(hpx/imgW, Math.min(1-hpx/imgW, drag.scx + dx));
+      cy = Math.max(hpx/imgH, Math.min(1-hpx/imgH, drag.scy + dy));
+    } else {
+      var cpx = drag.scx * imgW;
+      var cpy = drag.scy * imgH;
+      var dX = Math.abs(mx - cpx);
+      var dY = Math.abs(my - cpy);
+      half = Math.max(minH, Math.min(0.49, Math.min(dX,dY)/Math.min(imgW,imgH)));
+      var hp = half * Math.min(imgW, imgH);
+      cx = Math.max(hp/imgW, Math.min(1-hp/imgW, cx));
+      cy = Math.max(hp/imgH, Math.min(1-hp/imgH, cy));
+    }
+    render();
+    e.preventDefault();
+  }
+
+  function endDrag() {
+    if (!drag) return;
+    drag = null;
+    postVal();
+  }
+
+  // Mouse
+  box.addEventListener('mousedown', function(e){ if(!e.target.dataset.c) startDrag(e); });
+  box.querySelectorAll('.hnd').forEach(function(h){ h.addEventListener('mousedown', startDrag); });
+  document.addEventListener('mousemove', moveDrag);
+  document.addEventListener('mouseup', endDrag);
+
+  // Touch
+  box.addEventListener('touchstart', function(e){ if(!e.target.dataset.c) startDrag(e); }, {passive:false});
+  box.querySelectorAll('.hnd').forEach(function(h){ h.addEventListener('touchstart', startDrag, {passive:false}); });
+  document.addEventListener('touchmove', moveDrag, {passive:false});
+  document.addEventListener('touchend', endDrag);
+
+  // ── Receive args from Streamlit ───────────────────────────────
+  window.addEventListener('message', function(e) {
+    if (!e.data || e.data.type !== 'streamlit:render') return;
+    var args = e.data.args || {};
+
+    if (typeof args.cx   === 'number') cx   = args.cx;
+    if (typeof args.cy   === 'number') cy   = args.cy;
+    if (typeof args.half === 'number') half = args.half;
+
+    if (args.img_url && args.img_url !== currentUrl) {
+      currentUrl = args.img_url;
+      imgW = 0; imgH = 0;
+      con.style.display = 'none';
+      loading.style.display = 'flex';
+      hint.style.display = 'none';
+      loading.textContent = 'Loading preview…';
+      img.src = args.img_url;
+    } else if (imgW) {
+      render();
+    }
+  });
+
+  // Signal ready
+  window.parent.postMessage({ type:'streamlit:componentReady', apiVersion:1 }, '*');
+})();
+</script>
+</body>
+</html>
