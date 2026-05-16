@@ -9,10 +9,32 @@ import base64
 import io
 from streamlit_cropper import st_cropper
 
+# ── Process logo once (used for favicon + navbar) ──────────────
+def _process_logo(path="logo.png"):
+    try:
+        img = Image.open(path).convert("RGBA")
+        arr = np.array(img, dtype=np.int32)
+        r, g, b = arr[:, :, 0], arr[:, :, 1], arr[:, :, 2]
+        saturation = (np.maximum(np.maximum(r, g), b) -
+                      np.minimum(np.minimum(r, g), b))
+        brightness = (r + g + b) / 3
+        is_bg = (saturation < 18) & (brightness > 195)
+        result = np.array(img)
+        result[:, :, 3] = np.where(is_bg, 0, 255).astype(np.uint8)
+        out = Image.fromarray(result, "RGBA")
+        bbox = out.getbbox()
+        if bbox:
+            out = out.crop(bbox)
+        return out
+    except Exception:
+        return None
+
+_logo_pil = _process_logo()
+
 # ── Page config ────────────────────────────────────────────────
 st.set_page_config(
     page_title="FairVision — Age Group Classifier",
-    page_icon="🧠",
+    page_icon=_logo_pil if _logo_pil else "🧠",
     layout="centered",
     initial_sidebar_state="collapsed"
 )
@@ -49,11 +71,13 @@ footer { display: none !important; }
     display: flex; align-items: center; justify-content: space-between;
 }
 .nav-logo {
-    font-family: 'DM Serif Display', serif;
-    font-size: 22px; font-weight: 400; color: #111;
     display: flex; align-items: center; gap: 10px;
+    font-family: 'DM Serif Display', serif;
+    font-size: 28px; font-weight: 400; color: #111;
 }
-.nav-logo span { color: #5B4FE8; }
+.nav-logo img { height: 48px; width: auto; display: block; }
+.nav-logo > .wm { color: #111; }
+.nav-logo > .wm > span { color: #5B4FE8; }
 .nav-badge {
     font-family: 'DM Sans', sans-serif;
     font-size: 11px; font-weight: 600;
@@ -63,10 +87,10 @@ footer { display: none !important; }
 }
 .nav-links { display: flex; gap: 32px; }
 .nav-links a {
-    font-size: 14px; font-weight: 500; color: #555;
+    font-size: 16px; font-weight: 500; color: #1A1040;
     text-decoration: none; transition: color 0.2s;
 }
-.nav-links a:hover { color: #111; }
+.nav-links a:hover { color: #5B4FE8; }
 
 /* ── Hero section ── */
 .hero-section {
@@ -244,12 +268,32 @@ footer { display: none !important; }
 
 /* ── Footer ── */
 .site-footer {
-    background: #0A0A0A; color: #555;
-    padding: 32px 48px;
+    background: #1A1040; color: #A89FD8;
+    padding: 28px 48px;
     display: flex; justify-content: space-between; align-items: center;
     font-size: 13px;
 }
-.site-footer span { color: #333; }
+.site-footer .footer-left {
+    display: flex; align-items: center; gap: 14px;
+}
+.site-footer .footer-left img {
+    height: 38px; width: auto; display: block; opacity: 0.92;
+}
+.site-footer .footer-brand {
+    display: flex; flex-direction: column; gap: 3px;
+}
+.site-footer .footer-name {
+    font-family: 'DM Serif Display', serif;
+    font-size: 17px; font-weight: 400; color: #E8E3FF;
+    letter-spacing: -0.01em;
+}
+.site-footer .footer-meta {
+    font-size: 12px; color: #7B6FC0; line-height: 1.4;
+}
+.site-footer .footer-right {
+    text-align: right; font-size: 12px; color: #6B5FA8; line-height: 1.7;
+}
+.site-footer .footer-right strong { color: #A89FD8; font-weight: 500; }
 
 /* ── Streamlit overrides ── */
 [data-testid="stFileUploader"] {
@@ -394,12 +438,25 @@ def _load_b64(filename):
     except FileNotFoundError:
         return None
 
+# Build base64 src for navbar from the already-processed PIL image
+def _pil_to_b64(pil_img):
+    buf = io.BytesIO()
+    pil_img.save(buf, format='PNG')
+    return base64.b64encode(buf.getvalue()).decode()
+
+_logo_src = f'data:image/png;base64,{_pil_to_b64(_logo_pil)}' if _logo_pil else ''
+
 # ══════════════════════════════════════════════════════════════
 # NAVBAR
 # ══════════════════════════════════════════════════════════════
-st.markdown("""
+_logo_img_html = (
+    f'<img src="{_logo_src}" alt="" '
+    f'style="height:48px;width:auto;object-fit:contain;display:block;">'
+    if _logo_src else ''
+)
+st.markdown(f"""
 <div class="nav-bar">
-  <div class="nav-logo">🧠 Fair<span>Vision</span></div>
+  <div class="nav-logo">{_logo_img_html}<span class="wm">Fair<span>Vision</span></span></div>
   <div class="nav-links">
     <a href="#demo">Try Demo</a>
     <a href="#about">About</a>
@@ -607,7 +664,7 @@ st.markdown(f"""
   <div class="feature-card">
     <div class="feature-icon">{_icon_cnn}</div>
     <div class="feature-title">CNN From Scratch</div>
-    <div class="feature-desc">4-block convolutional neural network trained entirely from scratch on FairFace — no pretrained models used.</div>
+    <div class="feature-desc">ResNet-style CNN with residual connections, trained entirely from scratch on FairFace — no pretrained models used.</div>
   </div>
 </div>
 """, unsafe_allow_html=True)
@@ -860,18 +917,19 @@ st.markdown("""
     <div class="info-block">
       <div class="info-block-title">Model Architecture</div>
       <p>
-        A <strong style="color:white">4-block CNN</strong> built from scratch in PyTorch.
-        Each block: Conv→BatchNorm→ReLU×2→MaxPool.
-        Global Average Pooling feeds into a 3-layer FC head (512→256→9).
-        1,438,441 trainable parameters. No pretrained weights used.
+        A <strong style="color:white">ResNet-style CNN</strong> built from scratch in PyTorch.
+        Stem: Conv7×7→BN→ReLU→MaxPool. Then 3 stages of 2 ResBlocks each,
+        with skip connections for stable gradient flow.
+        Global Average Pooling feeds into a FC head (512→256→9) with Dropout.
+        11,162,185 trainable parameters. No pretrained weights used.
       </p>
     </div>
     <div class="info-block">
       <div class="info-block-title">Fairness Audit</div>
       <p>
-        The baseline model showed a <strong style="color:white">8.97pp race accuracy gap</strong>
-        (East Asian 55.16% vs White 46.19%) and a 12.19pp intersectional gap.
-        Gender gap was 3.12pp. These findings motivated mitigation strategies.
+        The baseline model showed a <strong style="color:white">6.20pp race accuracy gap</strong>
+        (East Asian 59.61% best vs Black 53.41% worst) and an 8.36pp intersectional gap.
+        Gender gap was 0.43pp. These findings motivated mitigation strategies.
       </p>
     </div>
     <div class="info-block">
@@ -879,7 +937,7 @@ st.markdown("""
       <p>
         <strong style="color:white">Strategy 1</strong> — Class-weighted loss penalises errors on rare age groups.
         <strong style="color:white">Strategy 2</strong> — WeightedRandomSampler oversamples underrepresented
-        race×age combinations. Strategy 2 achieved the best fairness: race gap reduced to 7.61pp.
+        race×age combinations. Strategy 1 achieves the best fairness: race gap reduced to 5.61pp and gender gap to 0.07pp.
       </p>
     </div>
   </div>
@@ -895,8 +953,8 @@ st.markdown("""
   <div class="section-label">Model Performance</div>
   <h2 class="section-title">Baseline vs Mitigated Models</h2>
   <p class="section-desc">
-    Three models were trained and compared. The deployed model is Strategy 2
-    — chosen for achieving the best fairness metrics.
+    Three models were trained and compared. The deployed model is the Baseline
+    — achieving 56.45% validation accuracy on the 9-class problem.
   </p>
 </div>
 """, unsafe_allow_html=True)
@@ -905,21 +963,22 @@ with st.container():
     col1, col2, col3 = st.columns([1, 6, 1])
     with col2:
         perf_data = {
-            "Model"              : ["Baseline", "Strategy 1 (Class Weights)", "Strategy 2 (Oversampling) ✅"],
-            "Accuracy"           : ["48.81%", "34.81%", "42.55%"],
-            "Macro F1"           : ["0.3848", "0.3309", "0.4228"],
-            "Race Gap ↓"         : ["8.97 pp", "8.93 pp", "7.61 pp"],
-            "Gender Gap ↓"       : ["3.12 pp", "3.12 pp", "1.38 pp"],
-            "Intersect. Gap ↓"   : ["12.19 pp", "11.81 pp", "10.19 pp"],
+            "Model"              : ["Baseline ✅", "Strategy 1 (Class Weights)", "Strategy 2 (Oversampling)"],
+            "Accuracy"           : ["56.45%", "51.16%", "51.09%"],
+            "Macro F1"           : ["0.5300", "0.4991", "0.5121"],
+            "Race Gap ↓"         : ["6.20 pp", "5.61 pp", "6.25 pp"],
+            "Gender Gap ↓"       : ["0.43 pp", "0.07 pp", "0.25 pp"],
+            "Intersect. Gap ↓"   : ["8.36 pp", "6.17 pp", "8.32 pp"],
         }
         df_perf = __import__('pandas').DataFrame(perf_data)
         st.dataframe(df_perf, use_container_width=True, hide_index=True)
 
         st.markdown("""
         <p class="muted" style="margin-top:12px">
-          ✅ Strategy 2 (WeightedRandomSampler) is the deployed model.
-          It achieves the lowest race gap (7.61pp), lowest gender gap (1.38pp),
-          and highest Macro F1 (0.4228) among all three models.
+          ✅ Baseline is the deployed model (56.45% accuracy). Strategy 1 achieves the best
+          fairness — lowest race gap (5.61 pp) and gender gap (0.07 pp) — but at a small
+          accuracy cost. Strategy 2 improves macro F1 over Strategy 1 but does not reduce
+          the race gap further. All gaps measured as max–min accuracy across demographic groups.
         </p>
         """, unsafe_allow_html=True)
 
@@ -947,7 +1006,7 @@ st.markdown("""
       <div class="limit-card-title">📊 Probabilistic output only</div>
       <div class="limit-card-desc">
         Predictions are statistical estimates — not ground truth. The model
-        achieves ~42% accuracy on a 9-class problem. Errors are expected and normal.
+        achieves ~56% accuracy on a 9-class problem. Errors are expected and normal.
       </div>
     </div>
     <div class="limit-card">
@@ -960,15 +1019,15 @@ st.markdown("""
     <div class="limit-card">
       <div class="limit-card-title">👴 Older age groups underperform</div>
       <div class="limit-card-desc">
-        The model struggles with ages 60–69 and 70+. The 70+ class has only 842 training
-        samples vs 25,598 for the 20–29 class — a 30x imbalance that persists despite mitigation.
+        The model struggles with ages 60–69 and 70+. The 70+ class has only 686 training
+        samples vs 20,432 for the 20–29 class — a 29.8× imbalance that persists despite mitigation.
       </div>
     </div>
     <div class="limit-card">
       <div class="limit-card-title">🌍 Remaining demographic bias</div>
       <div class="limit-card-desc">
-        Despite mitigation, a 7.61pp race accuracy gap remains. The system performs
-        better on East Asian faces than other groups. Continued improvement is needed.
+        The baseline shows a 6.20pp race accuracy gap (East Asian 59.61% vs Black 53.41%).
+        Strategy 1 reduces this to 5.61pp. Continued improvement is needed across all groups.
       </div>
     </div>
     <div class="limit-card">
@@ -987,9 +1046,21 @@ st.markdown("""
 # ══════════════════════════════════════════════════════════════
 # FOOTER
 # ══════════════════════════════════════════════════════════════
-st.markdown("""
+_footer_logo_html = (
+    f'<img src="{_logo_src}" alt="FairVision">'
+    if _logo_src else ''
+)
+st.markdown(f"""
 <div class="site-footer">
-  <span>🧠 FairVision &mdash; Certified AI & ML Engineer · IJSE · 2025/2026</span>
-  <span>Built with PyTorch · FairFace · Streamlit</span>
+  <div class="footer-left">
+    {_footer_logo_html}
+    <div class="footer-brand">
+      <span class="footer-name">FairVision</span>
+      <span class="footer-meta">Janith Thiwanka &nbsp;·&nbsp; janith.tw@gmail.com<br>Senior Software Engineer</span>
+    </div>
+  </div>
+  <div class="footer-right">
+    <strong>Built with</strong><br>PyTorch &nbsp;·&nbsp; FairFace &nbsp;·&nbsp; Streamlit
+  </div>
 </div>
 """, unsafe_allow_html=True)
